@@ -1,0 +1,16 @@
+{
+  "name": "Wireguard",
+  "version": "0.1.0",
+  "type": "TOOL",
+  "description": "A Pak wrapping WireGuard, a fast and modern VPN.",
+  "author": "spott",
+  "repo_url": "https://github.com/spott/wireguard-pak",
+  "release_filename": "Wireguard.pak.zip",
+  "platforms": [
+    "tg5040"
+  ],
+  "update_ignore": [
+    "config.json"
+  ],
+  "launch": "launch.sh"
+}

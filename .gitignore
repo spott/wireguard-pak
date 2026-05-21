@@ -1,0 +1,11 @@
+dist
+bin/*
+!bin/.gitkeep
+res/fonts/*
+!res/fonts/.gitkeep
+
+!bin/on-boot
+
+result
+result-*
+.direnv

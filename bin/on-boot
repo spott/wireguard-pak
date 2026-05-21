@@ -1,0 +1,189 @@
+#!/bin/sh
+BIN_DIR="$(dirname "$0")"
+PAK_DIR="$(dirname "$BIN_DIR")"
+PAK_NAME="$(basename "$PAK_DIR")"
+PAK_NAME="${PAK_NAME%.*}"
+set -x
+
+rm -f "$LOGS_PATH/$PAK_NAME.on-boot.txt"
+exec >>"$LOGS_PATH/$PAK_NAME.on-boot.txt"
+exec 2>&1
+
+echo "$0" "$@"
+cd "$PAK_DIR" || exit 1
+mkdir -p "$USERDATA_PATH/$PAK_NAME"
+
+architecture=arm
+if uname -m | grep -q '64'; then
+    architecture=arm64
+fi
+
+export PATH="$PAK_DIR/bin/$architecture:$PAK_DIR/bin/$PLATFORM:$PAK_DIR/bin:$PATH"
+
+WG_INTERFACE="wg0"
+WG_STATE_DIR="$USERDATA_PATH/$PAK_NAME"
+WG_SAVED_CONFIG="$WG_STATE_DIR/wg0.conf"
+WG_RESOLV_BACKUP="$WG_STATE_DIR/resolv.conf.bak"
+
+# WireGuard interface creation is one-shot — unlike tailscaled, it doesn't
+# spin and retry. Wait for the device to have a default route (i.e. wifi has
+# associated) before attempting to bring the tunnel up.
+wait_for_default_route() {
+    max_counter="${1:-30}"
+    counter=0
+    while [ "$counter" -lt "$max_counter" ]; do
+        if ip route show default 2>/dev/null | grep -q '^default'; then
+            return 0
+        fi
+        counter=$((counter + 1))
+        sleep 1
+    done
+    return 1
+}
+
+wg_conf_get() {
+    section="$1"
+    key="$2"
+    awk -v section="[$section]" -v key="$key" '
+        $0 ~ /^\[.*\]/ { in_section = ($0 == section); next }
+        in_section {
+            line = $0
+            sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+            if (line == "" || substr(line, 1, 1) == "#") next
+            pos = index(line, "=")
+            if (pos == 0) next
+            k = substr(line, 1, pos - 1); v = substr(line, pos + 1)
+            sub(/[ \t]+$/, "", k); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+            if (k == key) print v
+        }
+    ' "$WG_SAVED_CONFIG"
+}
+
+wg_conf_allowed_ips() {
+    awk '
+        $0 ~ /^\[.*\]/ { peer = ($0 == "[Peer]"); next }
+        peer {
+            line = $0
+            sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+            if (line == "" || substr(line, 1, 1) == "#") next
+            pos = index(line, "=")
+            if (pos == 0) next
+            k = substr(line, 1, pos - 1); v = substr(line, pos + 1)
+            sub(/[ \t]+$/, "", k); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+            if (k == "AllowedIPs") {
+                n = split(v, parts, ",")
+                for (i = 1; i <= n; i++) {
+                    cidr = parts[i]
+                    sub(/^[ \t]+/, "", cidr); sub(/[ \t]+$/, "", cidr)
+                    if (cidr != "") print cidr
+                }
+            }
+        }
+    ' "$WG_SAVED_CONFIG"
+}
+
+dns_apply() {
+    dns_raw="$(wg_conf_get Interface DNS)"
+    if [ -z "$dns_raw" ]; then
+        return 0
+    fi
+    if [ ! -f "$WG_RESOLV_BACKUP" ] && [ -e /etc/resolv.conf ]; then
+        cp /etc/resolv.conf "$WG_RESOLV_BACKUP" 2>/dev/null || true
+    fi
+    new_resolv="/tmp/${PAK_NAME}-resolv.conf"
+    : >"$new_resolv"
+    echo "$dns_raw" | tr ',' '\n' | while IFS= read -r entry; do
+        entry="$(echo "$entry" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [ -z "$entry" ] && continue
+        if echo "$entry" | grep -Eq '^[0-9a-fA-F:.]+$'; then
+            echo "nameserver $entry" >>"$new_resolv"
+        else
+            echo "search $entry" >>"$new_resolv"
+        fi
+    done
+    if [ -s "$new_resolv" ]; then
+        cp "$new_resolv" /etc/resolv.conf 2>/dev/null || true
+    fi
+    rm -f "$new_resolv"
+}
+
+main() {
+    if [ ! -f "$WG_SAVED_CONFIG" ]; then
+        echo "No saved wg0.conf at $WG_SAVED_CONFIG; nothing to start." 1>&2
+        return 0
+    fi
+
+    if ! wait_for_default_route 30; then
+        echo "No default route after 30s; aborting on-boot WireGuard start." 1>&2
+        return 1
+    fi
+
+    chmod 600 "$WG_SAVED_CONFIG" 2>/dev/null || true
+
+    if ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
+        ip link del "$WG_INTERFACE" 2>/dev/null || true
+    fi
+
+    "$PAK_DIR/bin/$architecture/wireguard-go" "$WG_INTERFACE" &
+
+    counter=0
+    while ! ip link show "$WG_INTERFACE" >/dev/null 2>&1; do
+        counter=$((counter + 1))
+        if [ "$counter" -gt 10 ]; then
+            echo "wireguard-go did not create $WG_INTERFACE" 1>&2
+            return 1
+        fi
+        sleep 1
+    done
+
+    if ! wg setconf "$WG_INTERFACE" "$WG_SAVED_CONFIG"; then
+        echo "wg setconf failed" 1>&2
+        return 1
+    fi
+
+    addresses="$(wg_conf_get Interface Address)"
+    if [ -z "$addresses" ]; then
+        echo "wg0.conf has no Address line" 1>&2
+        return 1
+    fi
+    echo "$addresses" | tr ',' '\n' | while IFS= read -r addr; do
+        addr="$(echo "$addr" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [ -z "$addr" ] && continue
+        ip addr add "$addr" dev "$WG_INTERFACE" 2>/dev/null || true
+    done
+
+    mtu="$(wg_conf_get Interface MTU)"
+    if [ -n "$mtu" ]; then
+        ip link set "$WG_INTERFACE" mtu "$mtu" 2>/dev/null || true
+    fi
+
+    ip link set "$WG_INTERFACE" up
+
+    awk -v IGN1="0.0.0.0/0" -v IGN2="::/0" '
+        $0 ~ /^\[.*\]/ { peer = ($0 == "[Peer]"); next }
+        peer {
+            line = $0
+            sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+            if (line == "" || substr(line, 1, 1) == "#") next
+            pos = index(line, "=")
+            if (pos == 0) next
+            k = substr(line, 1, pos - 1); v = substr(line, pos + 1)
+            sub(/[ \t]+$/, "", k); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+            if (k == "AllowedIPs") {
+                n = split(v, parts, ",")
+                for (i = 1; i <= n; i++) {
+                    cidr = parts[i]
+                    sub(/^[ \t]+/, "", cidr); sub(/[ \t]+$/, "", cidr)
+                    if (cidr != "" && cidr != IGN1 && cidr != IGN2) print cidr
+                }
+            }
+        }
+    ' "$WG_SAVED_CONFIG" | while IFS= read -r cidr; do
+        ip route add "$cidr" dev "$WG_INTERFACE" 2>/dev/null || true
+    done
+
+    dns_apply
+    return 0
+}
+
+main "$@"

@@ -1,0 +1,14 @@
+bin/tg5040/minui-list
+bin/tg5040/minui-presenter
+bin/arm/jq
+bin/arm/jq.LICENSE
+bin/arm/wireguard-go
+bin/arm/wireguard-go.LICENSE
+bin/arm/wg
+bin/arm/wg.LICENSE
+bin/arm64/jq
+bin/arm64/jq.LICENSE
+bin/arm64/wireguard-go
+bin/arm64/wireguard-go.LICENSE
+bin/arm64/wg
+bin/arm64/wg.LICENSE
