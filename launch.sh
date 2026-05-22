@@ -122,9 +122,12 @@ wg_get_ip_address() {
 }
 
 wg_get_latest_handshake() {
-    # Returns a "host:port last_handshake_seconds" line for the first peer
-    # with a non-zero handshake; empty if no handshake yet.
-    wg show "$WG_INTERFACE" latest-handshakes 2>/dev/null | awk '$2 != 0 {print $1; exit}'
+    # Returns the endpoint (host:port) of the first peer that has handshaken,
+    # i.e. the peer the tunnel is actually carrying traffic to. Empty if no
+    # peer has handshaken yet.
+    handshake_peer="$(wg show "$WG_INTERFACE" latest-handshakes 2>/dev/null | awk '$2 != 0 {print $1; exit}')"
+    [ -z "$handshake_peer" ] && return 0
+    wg show "$WG_INTERFACE" endpoints 2>/dev/null | awk -v p="$handshake_peer" '$1 == p {print $2; exit}'
 }
 
 # Pull config-section keys from an INI-style wg conf. Reads from $WG_SAVED_CONFIG.

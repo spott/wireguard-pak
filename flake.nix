@@ -11,28 +11,30 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        crossSets = {
-          aarch64 = pkgs.pkgsCross.aarch64-multiplatform;
-          armv7l = pkgs.pkgsCross.armv7l-hf-multiplatform;
+        # wg needs a static C link, which means musl — the nixpkgs glibc
+        # cross sets don't ship libc.a.
+        wgCross = {
+          aarch64 = pkgs.pkgsCross.aarch64-multiplatform-musl;
+          armv7l = pkgs.pkgsCross.muslpi;
         };
 
-        # wireguard-go: pure-Go userspace WireGuard implementation. Statically
-        # linked aarch64/armv7l binaries land in $out/bin/wireguard-go.
-        mkWireguardGo = crossPkgs:
-          crossPkgs.buildGoModule rec {
+        # wireguard-go: pure Go with CGO disabled, so we cross-compile using
+        # the host's Go toolchain and just override GOOS/GOARCH/GOARM. Using
+        # crossPkgs.buildGoModule would force-enable CGO and pull in the cross
+        # glibc, producing a binary linked against /nix/store paths that don't
+        # exist on the device.
+        mkWireguardGo = { goarch, goarm ? null }:
+          pkgs.buildGoModule rec {
             pname = "wireguard-go";
             version = "0.0.20230223";
 
-            # Pin to a known tag from https://git.zx2c4.com/wireguard-go/refs/.
-            # The two hashes below are placeholders -- the first `nix build`
-            # will fail and print the real values to substitute in.
             src = pkgs.fetchgit {
               url = "https://git.zx2c4.com/wireguard-go";
               rev = "12269c2761734b15625017d8565745096325392f";
-              sha256 = pkgs.lib.fakeSha256;
+              hash = "sha256-br7/dwr/e4HvBGJXh+6lWqxBUezt5iZNy9BFqEA1bLk=";
             };
 
-            vendorHash = pkgs.lib.fakeHash;
+            vendorHash = "sha256-RqZ/3+Xus5N1raiUTUpiKVBs/lrJQcSwr1dJib2ytwc=";
 
             ldflags = [
               "-s"
@@ -40,10 +42,27 @@
               "-X main.Version=${version}"
             ];
 
-            # CGO is not needed; produce a fully static binary.
-            CGO_ENABLED = 0;
+            # buildGoModule exports GOOS/GOARCH from stdenv.hostPlatform during
+            # its buildPhase setup, which overrides anything set via `env`.
+            # preBuild runs after that setup, so it's the right hook for the
+            # cross-compile knobs.
+            preBuild = ''
+              export CGO_ENABLED=0
+              export GOOS=linux
+              export GOARCH=${goarch}
+              ${pkgs.lib.optionalString (goarm != null) "export GOARM=${goarm}"}
+            '';
 
             doCheck = false;
+
+            # Cross-compiling with the host Go puts binaries under
+            # $out/bin/$GOOS_$GOARCH/. Hoist back to $out/bin/ and rename
+            # "wireguard" (the go.mod module name) to "wireguard-go" so the
+            # Makefile and launch.sh can find it.
+            postInstall = ''
+              mv $out/bin/linux_${goarch}/wireguard $out/bin/wireguard-go
+              rmdir $out/bin/linux_${goarch}
+            '';
 
             meta = with pkgs.lib; {
               description = "Userspace Go implementation of WireGuard";
@@ -52,8 +71,10 @@
             };
           };
 
-        # wg: CLI from wireguard-tools, statically linked against the cross
-        # toolchain's libc. We only ship src/wg, not wg-quick.
+        # The wg Makefile picks PLATFORM from `uname -s` — force "linux" so
+        # it doesn't try to use Darwin uapi headers when cross-compiling from
+        # macOS. Only src/wg ends up in $out/bin; wg-quick/bash-completion/
+        # systemd units are off.
         mkWg = crossPkgs:
           crossPkgs.stdenv.mkDerivation rec {
             pname = "wg";
@@ -61,18 +82,18 @@
 
             src = pkgs.fetchurl {
               url = "https://git.zx2c4.com/wireguard-tools/snapshot/wireguard-tools-${version}.tar.xz";
-              sha256 = pkgs.lib.fakeSha256;
+              hash = "sha256-lC7TLR1mMZMsgv+GyRroQo1MkL/sIxoU699sKfBo5gs=";
             };
 
             enableParallelBuilding = true;
 
             makeFlags = [
               "-C" "src"
+              "PLATFORM=linux"
               "WITH_BASHCOMPLETION=no"
               "WITH_SYSTEMDUNITS=no"
               "WITH_WGQUICK=no"
               "LDFLAGS=-static"
-              "PREFIX=$(out)"
             ];
 
             installPhase = ''
@@ -91,10 +112,10 @@
           };
       in {
         packages = {
-          wireguard-go-aarch64 = mkWireguardGo crossSets.aarch64;
-          wireguard-go-armv7l = mkWireguardGo crossSets.armv7l;
-          wg-aarch64 = mkWg crossSets.aarch64;
-          wg-armv7l = mkWg crossSets.armv7l;
+          wireguard-go-aarch64 = mkWireguardGo { goarch = "arm64"; };
+          wireguard-go-armv7l = mkWireguardGo { goarch = "arm"; goarm = "7"; };
+          wg-aarch64 = mkWg wgCross.aarch64;
+          wg-armv7l = mkWg wgCross.armv7l;
         };
 
         devShells.default = pkgs.mkShell {

@@ -51,14 +51,14 @@ bin/arm/wireguard-go:
 	$(NIX) build .#wireguard-go-armv7l -o result-wireguard-go-armv7l
 	install -m 0755 result-wireguard-go-armv7l/bin/wireguard-go bin/arm/wireguard-go
 	rm -f result-wireguard-go-armv7l
-	curl -f -sSL -o bin/arm/wireguard-go.LICENSE "https://git.zx2c4.com/wireguard-go/plain/COPYING"
+	curl -f -sSL -o bin/arm/wireguard-go.LICENSE "https://git.zx2c4.com/wireguard-go/plain/LICENSE"
 
 bin/arm64/wireguard-go:
 	mkdir -p bin/arm64
 	$(NIX) build .#wireguard-go-aarch64 -o result-wireguard-go-aarch64
 	install -m 0755 result-wireguard-go-aarch64/bin/wireguard-go bin/arm64/wireguard-go
 	rm -f result-wireguard-go-aarch64
-	curl -f -sSL -o bin/arm64/wireguard-go.LICENSE "https://git.zx2c4.com/wireguard-go/plain/COPYING"
+	curl -f -sSL -o bin/arm64/wireguard-go.LICENSE "https://git.zx2c4.com/wireguard-go/plain/LICENSE"
 
 bin/arm/wg:
 	mkdir -p bin/arm
