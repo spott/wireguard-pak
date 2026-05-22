@@ -16,7 +16,7 @@ The pak may work on other platforms, but it has only been tested on the Brick.
 
 1. Mount your MinUI SD card.
 2. Download the latest release from GitHub. It will be named `Wireguard.pak.zip`.
-3. Copy the zip into the `/Tools/tg3040` directory on the SD card (use the platform folder that matches your device).
+3. Copy the zip into the `/Tools/tg5040` directory on the SD card (use the platform folder that matches your device).
 4. Extract the zip in place, then delete the zip file.
 5. Confirm that there is a `Wireguard.pak/launch.sh` file on your SD card.
 
